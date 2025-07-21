@@ -1,0 +1,28 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments (if you use them)
+venv/
+.env/
+.venv/
+
+# Jupyter checkpoints (if any)
+.ipynb_checkpoints/
+
+# Mac/Linux/Editor files
+.DS_Store
+*.swp
+*.swo
+
+# Pytest cache
+.pytest_cache/
+
+# Coverage reports
+htmlcov/
+.coverage
+.cache
+
+# VSCode
+.vscode/
