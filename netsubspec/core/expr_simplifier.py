@@ -1,4 +1,4 @@
-from typing import List, Dict, Tuple
+from typing import List, Set, Dict, Tuple
 from netsubspec.utils.error import fatal_error
 from netsubspec.core.expr_node import *
 
@@ -32,6 +32,8 @@ class ExprSimplifier:
         self.__replace_range_rules: Dict[ExprNode, Tuple[int, int]] = {}
         self.__replace_expr_rules: Dict[ExprNode, ExprNode] = {}
 
+        self.__best_routes: Dict[ExprNode, Set[ExprNode]] = {}
+
     def replace_all(self) -> None:
         """Run constant replacement and simplification until convergence."""
         while True:
@@ -39,6 +41,12 @@ class ExprSimplifier:
                 self.__collect_constant_rules(node)
             for node in self.__expr_nodes:
                 self.__collect_equality_rules(node)
+
+            if not self.__replace_const_rules:
+                expr = self.__propagate_best_routes()
+                self.__collect_constant_rules(expr)
+                print(expr)
+                print("111111111111111111111111111111111111111111111111111111")
 
             self.print_replace_rules()
             print("-------------------------------------------------------------")
@@ -75,6 +83,9 @@ class ExprSimplifier:
 
     def get_expr_nodes(self) -> ExprList:
         return self.__expr_nodes
+
+    def get_best_routes(self) -> Dict[ExprNode, Set[ExprNode]]:
+        return self.__best_routes
 
     def __collect_constant_rules(self, expr: ExprNode) -> None:
         if expr.op == "and":
@@ -231,3 +242,122 @@ class ExprSimplifier:
         if len(args) == 1:
             return args[0]
         return ExprNode(op, args)
+
+    def __propagate_best_routes(self) -> ExprNode:
+        for expr in self.__expr_nodes:
+            self.__collect_best_routes(expr) 
+
+        for var, clauses in self.__best_routes.items():
+            for clause in clauses:
+                if not ("or" == clause.op and "and" == clause.args[0].op):
+                    continue
+                return self.__select_best_routes(clause) 
+
+    def __select_best_routes(self, expr_node: ExprNode) -> ExprNode:
+        ATTR_PRIORITY = ["prefixLength", "adminDist", "localPref", "metric"]
+        ATTR_COMPARE = {
+            "prefixLength": True,
+            "adminDist": False,
+            "localPref": True,
+            "metric": False
+        }
+
+        op = expr_node.op
+        args = expr_node.args
+
+        valid_routes = []
+
+        for route in args:
+            is_valid = True
+            for attr in route.args:
+                if "=" == attr.op and not attr.args[1].is_const():
+                    is_valid = False
+                    break
+            if is_valid:
+                valid_routes.append(route)
+            
+        # select best route current according to ATTR_PRIORITY and ATTR_COMPARE
+        # 若无有效 route，或仅有一个，直接返回
+        if len(valid_routes) <= 1:
+            expr_node.args = valid_routes
+            return
+
+        # 将每个 route 的属性提取成字典，便于排序比较
+        def extract_attr_map(route: ExprNode) -> dict:
+            attr_map = {}
+            for attr_expr in route.args:
+                if attr_expr.op == "=" and attr_expr.args[0].is_var():
+                    var_name = attr_expr.args[0].args[0]
+                    attr = var_name.split("_")[-1]  # 例如 |0_isp1_OVERALL_BEST_None_metric|
+                    attr_map[attr] = attr_expr.args[1].args[0]
+            return attr_map
+
+        # 比较两个 route 哪个更优
+        def better_than(r1_attrs: dict, r2_attrs: dict) -> bool:
+            for attr in ATTR_PRIORITY:
+                if attr not in r1_attrs or attr not in r2_attrs:
+                    continue
+                v1 = int(r1_attrs[attr].value, 0) if isinstance(r1_attrs[attr].value, str) else r1_attrs[attr].value
+                v2 = int(r2_attrs[attr].value, 0) if isinstance(r2_attrs[attr].value, str) else r2_attrs[attr].value
+                if v1 == v2:
+                    continue
+                if ATTR_COMPARE[attr]:
+                    return v1 > v2
+                else:
+                    return v1 < v2
+            return False  # 所有属性都一样，不认为更优
+
+        # 逐个比较，选出最优 route
+        best_route = valid_routes[0]
+        best_attr_map = extract_attr_map(best_route)
+
+        for route in valid_routes[1:]:
+            current_attr_map = extract_attr_map(route)
+            if better_than(current_attr_map, best_attr_map):
+                best_route = route
+                best_attr_map = current_attr_map
+
+        # 设置 expr_node.args 为只包含 best_route
+        return best_route
+
+    def __collect_best_routes(self, expr_node: ExprNode) -> None:
+        op = expr_node.op
+        args = expr_node.args
+
+        if "or" != op:
+            return
+
+        prefixLength = self.__find_prefixLength(args[0])
+        if not prefixLength:
+            return
+
+        if prefixLength not in self.__best_routes:
+            self.__best_routes[prefixLength] = set()
+        self.__best_routes[prefixLength].add(expr_node)
+
+    def __find_prefixLength(self, expr_node: ExprNode) -> Optional[ExprNode]:
+        """
+        Find the left-hand side variable with '_prefixLength' in its name
+        from comparison or conjunction expressions.
+    
+        Only return the LHS if it's a var and contains '_prefixLength'.
+        """
+        def is_prefix_var(e: ExprNode) -> bool:
+            return isinstance(e, ExprNode) and e.is_var() and "_prefixLength" in e.args[0]
+    
+        if expr_node.op in (">", "=", "<", "<=", ">="):
+            lhs, rhs = expr_node.args
+            if is_prefix_var(lhs):
+                return lhs
+            else:
+                return None
+    
+        if expr_node.op == "and":
+            for arg in expr_node.args:
+                if arg.op in (">", "=", "<", "<=", ">="):
+                    lhs, rhs = arg.args
+                    if is_prefix_var(lhs):
+                        return lhs
+            return None
+    
+        return None
