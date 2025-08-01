@@ -1,9 +1,9 @@
 import re
 from typing import List as TList, Union as TUnion, Dict
 
-from netsubspec.utils.error import warn_if_false, fatal_error
-from netsubspec.utils.regex import CONST_PATTERN, DECLARE_FUN_PATTERN
-from netsubspec.utils.utils import smt_bin
+from netsubspec.utils.error import *
+from netsubspec.utils.regex import *
+from netsubspec.utils.utils import *
 from netsubspec.core.expr_node import *
 
 from z3 import *
@@ -13,7 +13,8 @@ class ExprParser:
         self.__smt_encoding: str        = smt_encoding
         self.__smt_lines:    TList[str] = smt_lines
 
-        self.__var_consts: Dict[ExprNode, ExprNode] = {}
+        self.__config_var_consts: Dict[ExprNode, ExprNode] = {}
+        self.__inter_var_consts:  Dict[ExprNode, ExprNode] = {}
         self.__expr_nodes: ExprList = []
 
     # FIXME: Improve this method according to the following two approaches.
@@ -23,70 +24,82 @@ class ExprParser:
         """Compute values of intermediate variables via calling Z3."""
         for line in self.__smt_lines:
             line = line.strip()
-            if not (line.startswith("(declare-fun") and line.endswith(")")):
-                continue
 
-            declare_fun_match = DECLARE_FUN_PATTERN.fullmatch(line)
-            if not declare_fun_match:
-                continue
-            var_name: str  = declare_fun_match.group("var")
-            type_name: str = declare_fun_match.group("type")
+            if declare_fun_match := DECLARE_FUN_PATTERN.fullmatch(line):
+                var_name: str  = declare_fun_match.group("var")
+                type_name: str = declare_fun_match.group("type")
 
-            if "permitted" in var_name or  \
-                    "CONTROL-FORWARDING" in var_name or  \
-                    "DATA-FORWARDING" in var_name:
-                if "Bool" not in type_name:
-                    fatal_error("ExprParser.compute()", "Unmatch variable type.")
+                if "permitted" in var_name or  \
+                        "CONTROL-FORWARDING" in var_name or  \
+                        "DATA-FORWARDING" in var_name:
+                    if "Bool" not in type_name:
+                        fatal_error("ExprParser.compute()", "Unmatch variable type.")
 
-                var_const     = f"(assert {var_name})"
-                var_not_const = f"(assert (not {var_name}))"
+                    var_const     = f"(assert {var_name})"
+                    var_not_const = f"(assert (not {var_name}))"
 
-                var_result     = self.__check_sat(self.__smt_encoding + var_const)
-                var_not_result = self.__check_sat(self.__smt_encoding + var_not_const)
+                    var_result     = self.__check_sat(self.__smt_encoding + var_const)
+                    var_not_result = self.__check_sat(self.__smt_encoding + var_not_const)
 
-                var_exprnode:         ExprNode = make_var(var_name)
-                const_true_exprnode:  ExprNode = make_const("true")
-                const_false_exprnode: ExprNode = make_const("false")
+                    var_exprnode:         ExprNode = make_var(var_name)
+                    const_true_exprnode:  ExprNode = make_const("true")
+                    const_false_exprnode: ExprNode = make_const("false")
 
-                if var_result and not var_not_result:
-                    self.__var_consts[var_exprnode] = const_true_exprnode
-                elif not var_result and var_not_result:
-                    self.__var_consts[var_exprnode] = const_false_exprnode
+                    if var_result and not var_not_result:
+                        self.__inter_var_consts[var_exprnode] = const_true_exprnode
+                    elif not var_result and var_not_result:
+                        self.__inter_var_consts[var_exprnode] = const_false_exprnode
+                    else:
+                        self.__inter_var_consts[var_exprnode] = None
+                        warn_if_false(False, "ExprParser.compute()",  \
+                            f"Invalid evaluation about the variable {var_name}.")
+
+                elif "history" in var_name:
+                    if "BitVec" not in type_name:
+                        fatal_error("ExprParser.compute()", "Unmatch variable type.")
+
+                    bits = re.search(r"\d+", type_name).group(0)
+                    const = 0
+                    maximum = (1 << int(bits)) - 1
+
+                    history_true_const = None
+                    history_true_counter = 0
+
+                    while const <= maximum:
+                        binary_str = smt_bin(const, int(bits))
+                        const += 1
+                        var_history_const = f"(assert (= {var_name} {binary_str}))"
+                        var_history_result =  \
+                            self.__check_sat(self.__smt_encoding + var_history_const)
+                        if not var_history_result:
+                            continue
+                        history_true_const = binary_str
+                        history_true_counter += 1
+
+                    var_history_exprnode:   ExprNode = make_var(var_name)
+                    const_history_exprnode: ExprNode = make_const(history_true_const)
+
+                    if 1 == history_true_counter:
+                        self.__inter_var_consts[var_history_exprnode] = const_history_exprnode
+                    else:
+                        fatal_error("ExprParser.compute()",  \
+                            f"Invalid evaluation about the history variable {var_name}.")
+
+            elif config_const_match := CONFIG_CONST_PATTERN.fullmatch(line):
+                config_var_name: str  = ""
+                config_var_const: str = ""
+                if config_const_match.group("var1"):
+                    config_var_name = config_const_match.group("var1")
+                    config_var_const = "true"
+                elif config_const_match.group("var2"):
+                    config_var_name = config_const_match.group("var2")
+                    config_var_const = "false"
                 else:
-                    self.__var_consts[var_exprnode] = None
-                    warn_if_false(False, "ExprParser.compute()",  \
-                        f"Invalid evaluation about the variable {var_name}.")
-
-            elif "history" in var_name:
-                if "BitVec" not in type_name:
-                    fatal_error("ExprParser.compute()", "Unmatch variable type.")
-
-                bits = re.search(r"\d+", type_name).group(0)
-                const = 0
-                maximum = (1 << int(bits)) - 1
-
-                history_true_const = None
-                history_true_counter = 0
-
-                while const <= maximum:
-                    binary_str = smt_bin(const, int(bits))
-                    const += 1
-                    var_history_const = f"(assert (= {var_name} {binary_str}))"
-                    var_history_result =  \
-                        self.__check_sat(self.__smt_encoding + var_history_const)
-                    if not var_history_result:
-                        continue
-                    history_true_const = binary_str
-                    history_true_counter += 1
-
-                var_history_exprnode:   ExprNode = make_var(var_name)
-                const_history_exprnode: ExprNode = make_const(history_true_const)
-
-                if 1 == history_true_counter:
-                    self.__var_consts[var_history_exprnode] = const_history_exprnode
-                else:
-                    fatal_error("ExprParser.compute()",  \
-                        f"Invalid evaluation about the history variable {var_name}.")
+                    config_var_name = config_const_match.group("var3")
+                    config_var_const = config_const_match.group("const")
+                var_config_exprnode:   ExprNode = make_var(config_var_name)
+                const_config_exprnode: ExprNode = make_const(config_var_const)
+                self.__config_var_consts[var_config_exprnode] = const_config_exprnode
 
     def parse(self) -> None:
         """Parse a list of SMT-LIB lines and extract expression trees."""
@@ -218,18 +231,29 @@ class ExprParser:
         if not expr.is_var():
             fatal_error("ExprParser.__replace_var()", "Not variable ExprNode.")
 
-        if expr not in self.__var_consts.keys():  return expr
-        elif not self.__var_consts[expr]:         return expr
-        else:                                     return self.__var_consts[expr]
+        if expr in self.__config_var_consts.keys() and  \
+            self.__config_var_consts[expr]:  return self.__config_var_consts[expr]
+        elif expr in self.__inter_var_consts.keys() and  \
+            self.__inter_var_consts[expr]:   return self.__inter_var_consts[expr]
+        
+        return expr
+
+    def get_config_var_consts(self) -> Dict[ExprNode, ExprNode]:
+        return self.__config_var_consts
+
+    def get_inter_var_consts(self) -> Dict[ExprNode, ExprNode]:
+        return self.__inter_var_consts
 
     def get_var_consts(self) -> Dict[ExprNode, ExprNode]:
-        return self.__var_consts
+        return self.__config_var_consts | self.__inter_var_consts
 
     def get_expr_nodes(self) -> ExprList:
         return self.__expr_nodes
 
     def print_var_consts(self, delimiter_flag: bool = False) -> None:
-        for var, const in self.__var_consts.items():
+        for var, const in self.__config_var_consts.items():
+            print(f"{var}: {const}")
+        for var, const in self.__inter_var_consts.items():
             print(f"{var}: {const}")
         if delimiter_flag:
             print("------------------------------------------------------------"
