@@ -5,7 +5,7 @@ from netsubspec.core.expr_parser import ExprParser
 from netsubspec.core.def_parser import DefParser
 from netsubspec.core.expr_simplifier import ExprSimplifier
 
-def run_pipeline(work_dir: str) -> ExprList:
+def run_pipeline(work_dir: str) -> None:
     smt_encoding_file = os.path.join(work_dir, 'sliced_smt_encoding.smt2')
 
     # Read SMT assert expressions
