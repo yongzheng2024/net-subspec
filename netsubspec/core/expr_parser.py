@@ -16,8 +16,11 @@ class ExprParser:
         self.__var_consts: Dict[ExprNode, ExprNode] = {}
         self.__expr_nodes: ExprList = []
 
+    # FIXME: Improve this method according to the following two approaches.
+    #        1. model checking via Promela/SPIN
+    #        2. static analysis for computing the fixed point
     def compute(self) -> None:
-        """Compute the value of intermediate variables via calling Z3."""
+        """Compute values of intermediate variables via calling Z3."""
         for line in self.__smt_lines:
             line = line.strip()
             if not (line.startswith("(declare-fun") and line.endswith(")")):
@@ -76,11 +79,11 @@ class ExprParser:
                     history_true_const = binary_str
                     history_true_counter += 1
 
-                var_exprnode:           ExprNode = make_var(var_name)
+                var_history_exprnode:   ExprNode = make_var(var_name)
                 const_history_exprnode: ExprNode = make_const(history_true_const)
 
                 if 1 == history_true_counter:
-                    self.__var_consts[var_exprnode] = const_history_exprnode
+                    self.__var_consts[var_history_exprnode] = const_history_exprnode
                 else:
                     fatal_error("ExprParser.compute()",  \
                         f"Invalid evaluation about the history variable {var_name}.")
@@ -99,7 +102,7 @@ class ExprParser:
                 expr_node = self.__convert_to_expr_node(s_expr)
                 self.__expr_nodes.append(self.__simplify_expr(expr_node))
             except Exception as e:
-                fatal_error("ExprExtractor.parse()", f"Parsing failed: {e}.")
+                fatal_error("ExprParser.parse()", f"Parsing failed: {e}.")
 
     def __check_sat(self, smt_encoding: str) -> bool:
         """Call z3 to check this smt encoding is SAT or UNSAT, where SAT return True."""
@@ -125,7 +128,7 @@ class ExprParser:
     def __parse_sexpr(self, tokens: TList[str]) -> TUnion[str, TList]:
         """Parse tokens into an S-expression."""
         if not tokens:
-            fatal_error("ExprExtractor.__parse_sexpr()", "Unexpected end of tokens.")
+            fatal_error("ExprParser.__parse_sexpr()", "Unexpected end of tokens.")
 
         token = tokens.pop(0)
         if token == "(":
@@ -135,9 +138,9 @@ class ExprParser:
                     tokens.pop(0)
                     return expr_list
                 expr_list.append(self.__parse_sexpr(tokens))
-            fatal_error("ExprExtractor.__parse_sexpr()", "Missing closing parenthesis.")
+            fatal_error("ExprParser.__parse_sexpr()", "Missing closing parenthesis.")
         elif token == ")":
-            fatal_error("ExprExtractor.__parse_sexpr()", "Unexpected ')'.")
+            fatal_error("ExprParser.__parse_sexpr()", "Unexpected ')'.")
         else:
             return token
 
@@ -149,7 +152,7 @@ class ExprParser:
             return make_var(expr)
 
         if not expr:
-            fatal_error("ExprExtractor.__convert_to_expr_node()", "Empty expression.")
+            fatal_error("ExprParser.__convert_to_expr_node()", "Empty expression.")
 
         op = expr[0]
         args = [self.__convert_to_expr_node(e) for e in expr[1:]]
@@ -157,24 +160,36 @@ class ExprParser:
 
     def __simplify_expr(self, expr: ExprNode) -> ExprNode:
         """Simplify the ExprNode recursively, like z3 simplify()."""
-        simplified_args = [
-            self.__simplify_expr(arg) if isinstance(arg, ExprNode) else arg
+        # Replace variables with deduced constants, recursively.
+        replaced_args = [
+            self.__replace_var(arg) if isinstance(arg, ExprNode) and arg.is_var() 
+            else arg
             for arg in expr.args
         ]
 
-        if expr.op == "and":
+        # Simplify sub-expressions according to the following rules, recursively.
+        simplified_args = [
+            self.__simplify_expr(arg) if isinstance(arg, ExprNode) 
+            else arg 
+            for arg in replaced_args
+        ]
+
+        # Simplification rules.
+        if "and" == expr.op:
             if any(a.is_const_false() for a in simplified_args):
                 return make_const("false")
             args = [a for a in simplified_args if not a.is_const_true()]
-            return make_const("true") if not args else (args[0] if len(args) == 1 else ExprNode("and", args))
+            return make_const("true") if not args  \
+                else (args[0] if len(args) == 1 else ExprNode("and", args))
 
-        elif expr.op == "or":
+        elif "or" == expr.op:
             if any(a.is_const_true() for a in simplified_args):
                 return make_const("true")
             args = [a for a in simplified_args if not a.is_const_false()]
-            return make_const("false") if not args else (args[0] if len(args) == 1 else ExprNode("or", args))
+            return make_const("false") if not args  \
+                else (args[0] if len(args) == 1 else ExprNode("or", args))
 
-        elif expr.op == "ite":
+        elif "ite" == expr.op:
             cond, then_branch, else_branch = simplified_args
             if cond.is_const_true():
                 return then_branch
@@ -182,7 +197,7 @@ class ExprParser:
                 return else_branch
             return ExprNode("ite", [cond, then_branch, else_branch])
 
-        elif expr.op == "=>":
+        elif "=>" == expr.op:
             cond, then_branch = simplified_args
             if cond.is_const_true():
                 return then_branch
@@ -190,10 +205,39 @@ class ExprParser:
                 return make_const("true")
             return ExprNode("=>", [cond, then_branch])
 
+        elif "=" == expr.op:
+            lhs, rhs = simplified_args
+            if lhs.is_const() and rhs.is_const():
+                if lhs == rhs:  return make_const("true")
+                else:           warn_if_false(False, "ExprParser.__simplify_expr()", 
+                                              f"Incorrect equality expression {expr}.")
+
         return ExprNode(expr.op, simplified_args)
+
+    def __replace_var(self, expr: ExprNode) -> ExprNode:
+        if not expr.is_var():
+            fatal_error("ExprParser.__replace_var()", "Not variable ExprNode.")
+
+        if expr not in self.__var_consts.keys():  return expr
+        elif not self.__var_consts[expr]:         return expr
+        else:                                     return self.__var_consts[expr]
 
     def get_var_consts(self) -> Dict[ExprNode, ExprNode]:
         return self.__var_consts
 
     def get_expr_nodes(self) -> ExprList:
         return self.__expr_nodes
+
+    def print_var_consts(self, delimiter_flag: bool = False) -> None:
+        for var, const in self.__var_consts.items():
+            print(f"{var}: {const}")
+        if delimiter_flag:
+            print("------------------------------------------------------------"
+                  "--------------------")
+
+    def print_expr_nodes(self, delimiter_flag: bool = False) -> None:
+        for expr in self.__expr_nodes:
+            print(f"(assert {expr})")
+        if delimiter_flag:
+            print("------------------------------------------------------------"
+                  "--------------------")

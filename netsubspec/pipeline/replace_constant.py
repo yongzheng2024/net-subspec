@@ -19,6 +19,8 @@ def run_pipeline(work_dir: str) -> None:
     var_consts = expr_parser.get_var_consts()
     expr_parser.parse()
     expr_nodes = expr_parser.get_expr_nodes()
+    expr_parser.print_var_consts(True)
+    expr_parser.print_expr_nodes(True)
 
     # Extract the definitions of variables
     def_parser = DefParser(expr_nodes)
