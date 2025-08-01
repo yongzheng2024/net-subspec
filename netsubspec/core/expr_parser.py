@@ -23,10 +23,8 @@ class ExprParser:
             if not (line.startswith("(declare-fun") and line.endswith(")")):
                 continue
 
-            print(line)
             declare_fun_match = DECLARE_FUN_PATTERN.fullmatch(line)
             if not declare_fun_match:
-                print("continue")
                 continue
             var_name: str  = declare_fun_match.group("var")
             type_name: str = declare_fun_match.group("type")
@@ -35,7 +33,7 @@ class ExprParser:
                     "CONTROL-FORWARDING" in var_name or  \
                     "DATA-FORWARDING" in var_name:
                 if "Bool" not in type_name:
-                    fatal_error("ExprParser.compute()", "Invalid variable type.")
+                    fatal_error("ExprParser.compute()", "Unmatch variable type.")
 
                 var_const     = f"(assert {var_name})"
                 var_not_const = f"(assert (not {var_name}))"
@@ -53,11 +51,12 @@ class ExprParser:
                     self.__var_consts[var_exprnode] = const_false_exprnode
                 else:
                     self.__var_consts[var_exprnode] = None
-                    warn_if_false(False, "ExprParser.compute()", "Invalid evaluation.")
+                    warn_if_false(False, "ExprParser.compute()",  \
+                        f"Invalid evaluation about the variable {var_name}.")
 
             elif "history" in var_name:
                 if "BitVec" not in type_name:
-                    fatal_error("ExprParser.compute()", "Invalid variable type.")
+                    fatal_error("ExprParser.compute()", "Unmatch variable type.")
 
                 bits = re.search(r"\d+", type_name).group(0)
                 const = 0
@@ -70,7 +69,6 @@ class ExprParser:
                     binary_str = smt_bin(const, int(bits))
                     const += 1
                     var_history_const = f"(assert (= {var_name} {binary_str}))"
-                    print(var_history_const)
                     var_history_result =  \
                         self.__check_sat(self.__smt_encoding + var_history_const)
                     if not var_history_result:
@@ -84,8 +82,8 @@ class ExprParser:
                 if 1 == history_true_counter:
                     self.__var_consts[var_exprnode] = const_history_exprnode
                 else:
-                    fatal_error("ExprParser.compute()", 
-                                "Invalid evaluation about history variable.")
+                    fatal_error("ExprParser.compute()",  \
+                        f"Invalid evaluation about the history variable {var_name}.")
 
     def parse(self) -> None:
         """Parse a list of SMT-LIB lines and extract expression trees."""
