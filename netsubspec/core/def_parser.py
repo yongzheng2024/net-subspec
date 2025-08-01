@@ -48,6 +48,10 @@ class DefParser:
             else:
                 warn_if_false(False, "DefParser.extract_def()", 
                               f"Unsupported equality expression {expr_node}.")
+
+        elif op == ">" and args[0].is_reachable_id():
+            self.__add_var_def(args[0], original_node)
+
         elif op == "not":
             inner = args[0]
             if isinstance(inner, ExprNode) and inner.is_var():

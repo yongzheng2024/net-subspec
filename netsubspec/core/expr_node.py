@@ -20,10 +20,10 @@ class ExprNode:
         return hash((self.op, tuple(self.args)))
 
     def is_var(self) -> bool:
-        return self.op == "var" and len(self.args) == 1
+        return "var" == self.op and 1 == len(self.args)
 
     def is_const(self) -> bool:
-        return self.op == "const" and len(self.args) == 1
+        return "const" == self.op and 1 == len(self.args)
 
     def is_leaf(self) -> bool:
         return self.is_var() or self.is_const()
@@ -32,19 +32,22 @@ class ExprNode:
         return not self.is_leaf()
 
     def is_ite(self) -> bool:
-        return self.op == "ite" and len(self.args) == 3
+        return "ite" == self.op and 3 == len(self.args)
 
     def is_implies(self) -> bool:
-        return self.op == "=>" and len(self.args) == 2
+        return "=>" == self.op and 2 == len(self.args)
 
     def is_bvand(self) -> bool:
-        return self.op == "bvand" and len(self.args) == 2
+        return "bvand" == self.op and 2 == len(self.args)
 
     def is_const_true(self) -> bool:
-        return self.op == "const" and self.args == ["true"]
+        return "const" == self.op and ["true"] == self.args
 
     def is_const_false(self) -> bool:
-        return self.op == "const" and self.args == ["false"]
+        return "const" == self.op and ["false"] == self.args
+
+    def is_reachable_id(self) -> bool:
+        return "var" == self.op and "reachable-id" in self.args[0]
 
 
 # Construction helpers
