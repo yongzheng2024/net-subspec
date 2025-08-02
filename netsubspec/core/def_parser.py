@@ -1,19 +1,26 @@
 from typing import Set, Dict
 from dataclasses import dataclass
 
-from netsubspec.utils.error import warn_if_false
+from netsubspec.utils.error import *
 from netsubspec.core.expr_node import *
 
 class DefParser:
     def __init__(self, expr_nodes: ExprList) -> None:
-        self.__expr_nodes: ExprList = expr_nodes
+        self.__expr_nodes: ExprList                 = expr_nodes
+        # self.__var_consts: Dict[ExprNode, ExprNode] = var_consts
+
         # var -> clauses where it is defined
-        self.__var_def_clauses: Dict[ExprNode, Set[ExprNode]] = {}
+        self.__var_defs: Dict[ExprNode, Set[ExprNode]] = {}
 
     def parse(self) -> None:
         """Parse variable definitions from expression nodes."""
         for node in self.__expr_nodes:
             self.__parse_expr(node, node)
+
+        """
+        for var, defs in self.__var_defs.items():
+            self.__parse_def(var, defs)
+        """
 
     def __parse_expr(self, expr_node: ExprNode, original_node: ExprNode) -> None:
         """Recursively parse expressions to find definition clauses."""
@@ -32,6 +39,32 @@ class DefParser:
             self.__parse_expr(then_expr, original_node)
         else:
             self.__extract_def(expr_node, original_node)
+
+    def __parse_def(self, expr: ExprNode, defs: Set[ExprNode]) -> None:
+        if not expr.is_var():
+            fatal_error("DefParser.__parse_def()", f"Invalid ExprNode {expr}.")
+
+        var_name = expr.args[0]
+        if "reachable-id" in var_name:
+            pass
+
+        elif "history" in var_name:
+            pass
+
+        elif "permitted" in var_name:
+            pass
+
+        elif "choice" in var_name:
+            pass
+
+        elif "CONTROL-FORWARDING" in var_name:
+            pass
+
+        elif "DATA-FORWARDING" in var_name:
+            pass
+
+        else:
+            pass
 
     def __extract_def(self, expr_node: ExprNode, original_node: ExprNode) -> None:
         op = expr_node.op
@@ -66,9 +99,9 @@ class DefParser:
                           f"Unsupported equality expression {expr_node}.")
 
     def __add_var_def(self, var: ExprNode, clause: ExprNode) -> None:
-        if var not in self.__var_def_clauses:
-            self.__var_def_clauses[var] = set()
-        self.__var_def_clauses[var].add(clause)
+        if var not in self.__var_defs:
+            self.__var_defs[var] = set()
+        self.__var_defs[var].add(clause)
 
     def get_var_defs(self) -> Dict[ExprNode, Set[ExprNode]]:
-        return self.__var_def_clauses
+        return self.__var_defs

@@ -17,7 +17,7 @@ class ExprParser:
         self.__inter_var_consts:  Dict[ExprNode, ExprNode] = {}
         self.__expr_nodes: ExprList = []
 
-    # FIXME: Improve this method according to the following two approaches.
+    # FIXME: Improve this method according to one of the following approaches.
     #        1. model checking via Promela/SPIN
     #        2. static analysis for computing the fixed point
     def compute(self) -> None:
@@ -26,12 +26,14 @@ class ExprParser:
             line = line.strip()
 
             if declare_fun_match := DECLARE_FUN_PATTERN.fullmatch(line):
-                var_name: str  = declare_fun_match.group("var")
+                var_name:  str = declare_fun_match.group("var")
                 type_name: str = declare_fun_match.group("type")
 
-                if "permitted" in var_name or  \
+                if "permitted" in var_name or                \
+                        "choice" in var_name or              \
                         "CONTROL-FORWARDING" in var_name or  \
-                        "DATA-FORWARDING" in var_name:
+                        "DATA-FORWARDING" in var_name or     \
+                        "reachable_" in var_name:
                     if "Bool" not in type_name:
                         fatal_error("ExprParser.compute()", "Unmatch variable type.")
 
@@ -53,6 +55,34 @@ class ExprParser:
                         self.__inter_var_consts[var_exprnode] = None
                         warn_if_false(False, "ExprParser.compute()",  \
                             f"Invalid evaluation about the variable {var_name}.")
+
+                elif "FAILED-NODE" in var_name or  \
+                        "FAILED-EDGE" in var_name:
+                    if "Int" not in type_name:
+                        fatal_error("ExprParser.compute()", "Unmatch variable type.")
+
+                    failed_disable_const = f"(assert (= {var_name} 0))"
+                    failed_enable_const  = f"(assert (= {var_name} 1))"
+
+                    failed_disable_result =  \
+                        self.__check_sat(self.__smt_encoding + failed_disable_const)
+                    failed_enable_result  =  \
+                        self.__check_sat(self.__smt_encoding + failed_enable_const)
+
+                    failed_var_exprnode:     ExprNode = make_var(var_name)
+                    failed_disable_exprnode: ExprNode = make_const("0")
+                    failed_enable_exprnode:  ExprNode = make_const("1")
+
+                    if failed_disable_result and not failed_enable_result:
+                        self.__inter_var_consts[failed_var_exprnode] =  \
+                            failed_disable_exprnode
+                    elif not failed_disable_result and failed_enable_result:
+                        self.__inter_var_consts[failed_var_exprnode] =  \
+                            failed_enable_exprnode
+                    else:
+                        self.__inter_var_consts[failed_var_exprnode] = None
+                        warn_if_false(False, "ExprParser.compute()",  \
+                                      f"Invalid evaluation about the variable {var_name}.")
 
                 elif "history" in var_name:
                     if "BitVec" not in type_name:
@@ -86,7 +116,7 @@ class ExprParser:
                             f"Invalid evaluation about the history variable {var_name}.")
 
             elif config_const_match := CONFIG_CONST_PATTERN.fullmatch(line):
-                config_var_name: str  = ""
+                config_var_name:  str = ""
                 config_var_const: str = ""
                 if config_const_match.group("var1"):
                     config_var_name = config_const_match.group("var1")

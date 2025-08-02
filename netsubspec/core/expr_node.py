@@ -9,6 +9,8 @@ class ExprNode:
         self.args: List[Union[ExprNode, str]] = args
 
     def __repr__(self) -> str:
+        if self.is_var() or self.is_const():
+            return  f"{self.args[0]}"
         return f"({self.op} {' '.join(map(str, self.args))})"
 
     def __eq__(self, other: object) -> bool:
