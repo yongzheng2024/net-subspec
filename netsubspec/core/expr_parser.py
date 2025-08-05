@@ -13,9 +13,12 @@ class ExprParser:
         self.__smt_encoding: str        = smt_encoding
         self.__smt_lines:    TList[str] = smt_lines
 
-        self.__config_var_consts: Dict[ExprNode, ExprNode] = {}
-        self.__inter_var_consts:  Dict[ExprNode, ExprNode] = {}
-        self.__expr_nodes: ExprList = []
+        self.__config_var_to_consts:  Dict[ExprNode, ExprNode] = {}
+        self.__inter_var_to_consts:   Dict[ExprNode, ExprNode] = {}
+        self.__deduced_var_to_consts: Dict[ExprNode, ExprNode] = {}
+
+        # ExprNode -> True if it's a select-route ExprNode, False otherwise.
+        self.__expr_nodes: Dict[ExprNode, bool] = {}
 
     # FIXME: Improve this method according to one of the following approaches.
     #        1. model checking via Promela/SPIN
@@ -48,11 +51,11 @@ class ExprParser:
                     const_false_exprnode: ExprNode = make_const("false")
 
                     if var_result and not var_not_result:
-                        self.__inter_var_consts[var_exprnode] = const_true_exprnode
+                        self.__inter_var_to_consts[var_exprnode] = const_true_exprnode
                     elif not var_result and var_not_result:
-                        self.__inter_var_consts[var_exprnode] = const_false_exprnode
+                        self.__inter_var_to_consts[var_exprnode] = const_false_exprnode
                     else:
-                        self.__inter_var_consts[var_exprnode] = None
+                        self.__inter_var_to_consts[var_exprnode] = None
                         warn_if_false(False, "ExprParser.compute()",  \
                             f"Invalid evaluation about the variable {var_name}.")
 
@@ -74,13 +77,13 @@ class ExprParser:
                     failed_enable_exprnode:  ExprNode = make_const("1")
 
                     if failed_disable_result and not failed_enable_result:
-                        self.__inter_var_consts[failed_var_exprnode] =  \
+                        self.__inter_var_to_consts[failed_var_exprnode] =  \
                             failed_disable_exprnode
                     elif not failed_disable_result and failed_enable_result:
-                        self.__inter_var_consts[failed_var_exprnode] =  \
+                        self.__inter_var_to_consts[failed_var_exprnode] =  \
                             failed_enable_exprnode
                     else:
-                        self.__inter_var_consts[failed_var_exprnode] = None
+                        self.__inter_var_to_consts[failed_var_exprnode] = None
                         warn_if_false(False, "ExprParser.compute()",  \
                                       f"Invalid evaluation about the variable {var_name}.")
 
@@ -110,7 +113,7 @@ class ExprParser:
                     const_history_exprnode: ExprNode = make_const(history_true_const)
 
                     if 1 == history_true_counter:
-                        self.__inter_var_consts[var_history_exprnode] = const_history_exprnode
+                        self.__inter_var_to_consts[var_history_exprnode] = const_history_exprnode
                     else:
                         fatal_error("ExprParser.compute()",  \
                             f"Invalid evaluation about the history variable {var_name}.")
@@ -129,7 +132,7 @@ class ExprParser:
                     config_var_const = config_const_match.group("const")
                 var_config_exprnode:   ExprNode = make_var(config_var_name)
                 const_config_exprnode: ExprNode = make_const(config_var_const)
-                self.__config_var_consts[var_config_exprnode] = const_config_exprnode
+                self.__config_var_to_consts[var_config_exprnode] = const_config_exprnode
 
     def parse(self) -> None:
         """Parse a list of SMT-LIB lines and extract expression trees."""
@@ -138,14 +141,65 @@ class ExprParser:
             if not (line.startswith("(assert") and line.endswith(")")):
                 continue
 
+            select_route_flag = line.endswith("))))))))")
+
             inner_expr = line[len("(assert"):-len(")")].strip()
             try:
                 tokens = self.__tokenize(inner_expr)
                 s_expr = self.__parse_sexpr(tokens)
-                expr_node = self.__convert_to_expr_node(s_expr)
-                self.__expr_nodes.append(self.__simplify_expr(expr_node))
+                expr = self.__convert_to_expr_node(s_expr)
+                simplified_expr = (
+                    self.__simplify_expr(expr) if not select_route_flag else expr
+                )
+                self.__expr_nodes[simplified_expr] = select_route_flag
             except Exception as e:
                 fatal_error("ExprParser.parse()", f"Parsing failed: {e}.")
+
+        # Collect all deducable variable and replace it with constant / other variable.
+        self.simplify()
+
+    def simplify(self) -> None:
+        while True:
+            # Collect all deducable variable -> constant / other variable pairs.
+            deduced_var_to_consts: Dict[ExprNode, ExprNode] = {}
+            for expr, select_route_flag in self.__expr_nodes.items():
+                if select_route_flag:  continue
+                if expr.is_var():
+                    deduced_var_to_consts[expr] = make_const("true")
+                elif expr.is_not() and expr.args[0].is_var():
+                    deduced_var_to_consts[expr.args[0]] = make_const("false")
+                elif expr.is_equal() and expr.args[0].is_var() and expr.args[1].is_var():
+                    deduced_var_to_consts[expr.args[0]] = expr.args[1]
+                elif expr.is_equal() and (expr.args[0].is_var() or expr.args[1].is_var()):
+                    if expr.args[0].is_var() and expr.args[1].is_const():
+                        deduced_var_to_consts[expr.args[0]] = expr.args[1]
+                    elif expr.args[1].is_var() and expr.args[0].is_const():
+                        deduced_var_to_consts[expr.args[1]] = expr.args[0]
+                    else:
+                        pass
+                else:
+                    pass
+
+            # Break the loop if no new variable were deduced in this iteration.
+            if not deduced_var_to_consts:  break
+
+            # Add deduced variable to the global deduced variable map for this iteration.
+            self.__deduced_var_to_consts.update(deduced_var_to_consts)
+
+            # Repalce these variable with constant or other variable.
+            """
+            expr_nodes = []
+            for expr in self.__expr_nodes:
+                expr_nodes.append(self.__simplify_expr(expr, deduced_var_to_consts))
+            self.__expr_nodes = expr_nodes
+            """
+            self.__expr_nodes = {
+                (
+                    self.__simplify_expr(expr, deduced_var_to_consts)  \
+                        if not flag else expr
+                ): flag
+                for expr, flag in self.__expr_nodes.items()
+            }
 
     def __check_sat(self, smt_encoding: str) -> bool:
         """Call z3 to check this smt encoding is SAT or UNSAT, where SAT return True."""
@@ -201,11 +255,13 @@ class ExprParser:
         args = [self.__convert_to_expr_node(e) for e in expr[1:]]
         return ExprNode(op, args)
 
-    def __simplify_expr(self, expr: ExprNode) -> ExprNode:
+    def __simplify_expr(self, expr: ExprNode, 
+                        var_to_consts: Dict[ExprNode, ExprNode] = None) -> ExprNode:
         """Simplify the ExprNode recursively, like z3 simplify()."""
         # Replace variables with deduced constants, recursively.
         replaced_args = [
-            self.__replace_var(arg) if isinstance(arg, ExprNode) and arg.is_var() 
+            self.__replace_var(arg, var_to_consts)   \
+                    if isinstance(arg, ExprNode) and arg.is_var()
             else arg
             for arg in expr.args
         ]
@@ -252,46 +308,68 @@ class ExprParser:
             lhs, rhs = simplified_args
             if lhs.is_const() and rhs.is_const():
                 if lhs == rhs:  return make_const("true")
-                else:           warn_if_false(False, "ExprParser.__simplify_expr()", 
-                                              f"Incorrect equality expression {expr}.")
+                else:           return make_const("false")
+                # warn_if_false(False, "ExprParser.__simplify_expr()", 
+                #               f"Incorrect equality expression {expr}.")
+            elif lhs.is_var() and rhs.is_var():
+                if lhs == rhs:  return make_const("true")
+
+        elif "not" == expr.op:
+            cond = simplified_args[0]
+            if cond.is_const():
+                if "true" == cond.args[0]:     return make_const("false")
+                elif "false" == cond.args[0]:  return make_const("true")
 
         return ExprNode(expr.op, simplified_args)
 
-    def __replace_var(self, expr: ExprNode) -> ExprNode:
+    def __replace_var(self, expr: ExprNode, 
+                      var_to_consts: Dict[ExprNode, ExprNode] = None) -> ExprNode:
         if not expr.is_var():
             fatal_error("ExprParser.__replace_var()", "Not variable ExprNode.")
 
-        if expr in self.__config_var_consts.keys() and  \
-            self.__config_var_consts[expr]:  return self.__config_var_consts[expr]
-        elif expr in self.__inter_var_consts.keys() and  \
-            self.__inter_var_consts[expr]:   return self.__inter_var_consts[expr]
+        if var_to_consts is None:
+            if expr in self.__config_var_to_consts.keys() and  \
+                self.__config_var_to_consts[expr]:  return self.__config_var_to_consts[expr]
+            elif expr in self.__inter_var_to_consts.keys() and  \
+                self.__inter_var_to_consts[expr]:   return self.__inter_var_to_consts[expr]
+        else:
+            if expr in var_to_consts.keys() and var_to_consts[expr]:
+                return var_to_consts[expr]
         
         return expr
 
-    def get_config_var_consts(self) -> Dict[ExprNode, ExprNode]:
-        return self.__config_var_consts
+    def get_config_var_to_consts(self) -> Dict[ExprNode, ExprNode]:
+        return self.__config_var_to_consts
 
-    def get_inter_var_consts(self) -> Dict[ExprNode, ExprNode]:
-        return self.__inter_var_consts
+    def get_inter_var_to_consts(self) -> Dict[ExprNode, ExprNode]:
+        return self.__inter_var_to_consts
 
-    def get_var_consts(self) -> Dict[ExprNode, ExprNode]:
-        return self.__config_var_consts | self.__inter_var_consts
+    def get_deduced_var_to_consts(self) -> Dict[ExprNode, ExprNode]:
+        return self.__deduced_var_to_consts
 
-    def get_expr_nodes(self) -> ExprList:
+    def get_var_to_consts(self) -> Dict[ExprNode, ExprNode]:
+        return self.__config_var_to_consts | self.__inter_var_to_consts |   \
+                self.__deduced_var_to_consts
+
+    def get_expr_nodes(self) -> Dict[ExprNode, bool]:
         return self.__expr_nodes
 
-    def print_var_consts(self, delimiter_flag: bool = False) -> None:
-        for var, const in self.__config_var_consts.items():
+    def print_var_to_consts(self, delimiter_flag: bool = False) -> None:
+        for var, const in self.__config_var_to_consts.items():
             print(f"{var}: {const}")
-        for var, const in self.__inter_var_consts.items():
+        print("------------------------------------------------------------")
+        for var, const in self.__inter_var_to_consts.items():
+            print(f"{var}: {const}")
+        print("------------------------------------------------------------")
+        for var, const in self.__deduced_var_to_consts.items():
             print(f"{var}: {const}")
         if delimiter_flag:
-            print("------------------------------------------------------------"
+            print("------------------------------------------------------------" +  \
                   "--------------------")
 
     def print_expr_nodes(self, delimiter_flag: bool = False) -> None:
         for expr in self.__expr_nodes:
             print(f"(assert {expr})")
         if delimiter_flag:
-            print("------------------------------------------------------------"
+            print("------------------------------------------------------------" +  \
                   "--------------------")

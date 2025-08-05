@@ -16,16 +16,16 @@ def run_pipeline(work_dir: str) -> None:
     # Parse SMT expressions
     expr_parser = ExprParser(smt_encoding, smt_lines)
     expr_parser.compute()
-    var_consts = expr_parser.get_var_consts()
-    expr_parser.print_var_consts(True)
     expr_parser.parse()
+    var_consts = expr_parser.get_var_to_consts()
     expr_nodes = expr_parser.get_expr_nodes()
+    expr_parser.print_var_to_consts(True)
     expr_parser.print_expr_nodes(True)
 
     # Extract the definitions of variables
     def_parser = DefParser(expr_nodes)
     def_parser.parse()
-    var_defs = def_parser.get_var_defs()
+    var_defs = def_parser.get_def_to_conds()
 
     for var, clauses in var_defs.items():
         print(f"Variable {var} defined in:")

@@ -33,6 +33,12 @@ class ExprNode:
     def is_expr(self) -> bool:
         return not self.is_leaf()
 
+    def is_not(self) -> bool:
+        return "not" == self.op
+
+    def is_equal(self) -> bool:
+        return "=" == self.op
+
     def is_ite(self) -> bool:
         return "ite" == self.op and 3 == len(self.args)
 
@@ -58,6 +64,9 @@ def make_var(name: str) -> ExprNode:
 
 def make_const(val: str) -> ExprNode:
     return ExprNode("const", [val])
+
+def make_not(expr: ExprNode) -> ExprNode:
+    return ExprNode("not", [expr])
 
 def make_equal(lhs: ExprNode, rhs: ExprNode) -> ExprNode:
     assert lhs is not None, "make_equal(): Left ExprNode is None."
