@@ -16,6 +16,7 @@ class ExprParser:
         self.__config_var_to_consts:  Dict[ExprNode, ExprNode] = {}
         self.__inter_var_to_consts:   Dict[ExprNode, ExprNode] = {}
         self.__deduced_var_to_consts: Dict[ExprNode, ExprNode] = {}
+        self.__temp_var_to_consts:    Dict[ExprNode, ExprNode] = {}
 
         # ExprNode -> True if it's a select-route ExprNode, False otherwise.
         self.__expr_nodes: Dict[ExprNode, bool] = {}
@@ -158,48 +159,47 @@ class ExprParser:
         # Collect all deducable variable and replace it with constant / other variable.
         self.simplify()
 
+    def __deduce_expr(self, expr: ExprNode) -> None:
+        if expr.is_and():
+            [self.__deduce_expr(sub_expr) for sub_expr in expr.args]
+        elif expr.is_var():
+            self.__temp_var_to_consts[expr] = make_const("true")
+        elif expr.is_not() and expr.args[0].is_var():
+            self.__temp_var_to_consts[expr.args[0]] = make_const("false")
+        elif expr.is_equal() and expr.args[0].is_var() and expr.args[1].is_var():
+            self.__temp_var_to_consts[expr.args[0]] = expr.args[1]
+        elif expr.is_equal() and (expr.args[0].is_var() or expr.args[1].is_var()):
+            if expr.args[0].is_var() and expr.args[1].is_const():
+                self.__temp_var_to_consts[expr.args[0]] = expr.args[1]
+            elif expr.args[1].is_var() and expr.args[0].is_const():
+                self.__temp_var_to_consts[expr.args[1]] = expr.args[0]
+            else:
+                pass
+        else:
+            pass
+
     def simplify(self) -> None:
         while True:
             # Collect all deducable variable -> constant / other variable pairs.
-            deduced_var_to_consts: Dict[ExprNode, ExprNode] = {}
             for expr, select_route_flag in self.__expr_nodes.items():
                 if select_route_flag:  continue
-                if expr.is_var():
-                    deduced_var_to_consts[expr] = make_const("true")
-                elif expr.is_not() and expr.args[0].is_var():
-                    deduced_var_to_consts[expr.args[0]] = make_const("false")
-                elif expr.is_equal() and expr.args[0].is_var() and expr.args[1].is_var():
-                    deduced_var_to_consts[expr.args[0]] = expr.args[1]
-                elif expr.is_equal() and (expr.args[0].is_var() or expr.args[1].is_var()):
-                    if expr.args[0].is_var() and expr.args[1].is_const():
-                        deduced_var_to_consts[expr.args[0]] = expr.args[1]
-                    elif expr.args[1].is_var() and expr.args[0].is_const():
-                        deduced_var_to_consts[expr.args[1]] = expr.args[0]
-                    else:
-                        pass
-                else:
-                    pass
+                self.__deduce_expr(expr)
 
             # Break the loop if no new variable were deduced in this iteration.
-            if not deduced_var_to_consts:  break
-
-            # Add deduced variable to the global deduced variable map for this iteration.
-            self.__deduced_var_to_consts.update(deduced_var_to_consts)
+            if not self.__temp_var_to_consts:  break
 
             # Repalce these variable with constant or other variable.
-            """
-            expr_nodes = []
-            for expr in self.__expr_nodes:
-                expr_nodes.append(self.__simplify_expr(expr, deduced_var_to_consts))
-            self.__expr_nodes = expr_nodes
-            """
             self.__expr_nodes = {
                 (
-                    self.__simplify_expr(expr, deduced_var_to_consts)  \
+                    self.__simplify_expr(expr, self.__temp_var_to_consts)  \
                         if not flag else expr
                 ): flag
                 for expr, flag in self.__expr_nodes.items()
             }
+
+            # Add deduced variable to the global deduced variable map for this iteration.
+            self.__deduced_var_to_consts.update(self.__temp_var_to_consts)
+            self.__temp_var_to_consts = {}
 
     def __check_sat(self, smt_encoding: str) -> bool:
         """Call z3 to check this smt encoding is SAT or UNSAT, where SAT return True."""
@@ -256,20 +256,20 @@ class ExprParser:
         return ExprNode(op, args)
 
     def __simplify_expr(self, expr: ExprNode, 
-                        var_to_consts: Dict[ExprNode, ExprNode] = None) -> ExprNode:
+                        var_to_consts: Dict[ExprNode, ExprNode] = None, 
+                        flag: bool = False) -> ExprNode:
         """Simplify the ExprNode recursively, like z3 simplify()."""
         # Replace variables with deduced constants, recursively.
         replaced_args = [
             self.__replace_var(arg, var_to_consts)   \
-                    if isinstance(arg, ExprNode) and arg.is_var()
-            else arg
+                    if isinstance(arg, ExprNode) and arg.is_var() else arg
             for arg in expr.args
         ]
 
         # Simplify sub-expressions according to the following rules, recursively.
         simplified_args = [
-            self.__simplify_expr(arg) if isinstance(arg, ExprNode) 
-            else arg 
+            self.__simplify_expr(arg, var_to_consts)   \
+                    if isinstance(arg, ExprNode) else arg 
             for arg in replaced_args
         ]
 
@@ -277,16 +277,18 @@ class ExprParser:
         if "and" == expr.op:
             if any(a.is_const_false() for a in simplified_args):
                 return make_const("false")
-            args = [a for a in simplified_args if not a.is_const_true()]
-            return make_const("true") if not args  \
-                else (args[0] if len(args) == 1 else ExprNode("and", args))
+            new_args = [a for a in simplified_args if not a.is_const_true()]
+            if not new_args:          return make_const("true")
+            elif 1 == len(new_args):  return new_args[0]
+            else:                     return make_and(*new_args)
 
         elif "or" == expr.op:
             if any(a.is_const_true() for a in simplified_args):
                 return make_const("true")
-            args = [a for a in simplified_args if not a.is_const_false()]
-            return make_const("false") if not args  \
-                else (args[0] if len(args) == 1 else ExprNode("or", args))
+            new_args = [a for a in simplified_args if not a.is_const_false()]
+            if not new_args:          return make_const("false")
+            elif 1 == len(new_args):  return new_args[0]
+            else:                     return make_or(*new_args)
 
         elif "ite" == expr.op:
             cond, then_branch, else_branch = simplified_args
@@ -329,9 +331,11 @@ class ExprParser:
 
         if var_to_consts is None:
             if expr in self.__config_var_to_consts.keys() and  \
-                self.__config_var_to_consts[expr]:  return self.__config_var_to_consts[expr]
+                    self.__config_var_to_consts[expr]:
+                return self.__config_var_to_consts[expr]
             elif expr in self.__inter_var_to_consts.keys() and  \
-                self.__inter_var_to_consts[expr]:   return self.__inter_var_to_consts[expr]
+                    self.__inter_var_to_consts[expr]:
+                return self.__inter_var_to_consts[expr]
         else:
             if expr in var_to_consts.keys() and var_to_consts[expr]:
                 return var_to_consts[expr]

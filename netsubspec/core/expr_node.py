@@ -36,6 +36,12 @@ class ExprNode:
     def is_not(self) -> bool:
         return "not" == self.op
 
+    def is_and(self) -> bool:
+        return "and" == self.op
+
+    def is_or(self) -> bool:
+        return "or" == self.op
+
     def is_equal(self) -> bool:
         return "=" == self.op
 
@@ -73,13 +79,20 @@ def make_equal(lhs: ExprNode, rhs: ExprNode) -> ExprNode:
     assert rhs is not None, "make_equal(): Right ExprNode is None."
     return ExprNode("=", [lhs, rhs])
 
-def make_and(*args: Optional[ExprNode]) -> Optional[ExprNode]:
+def make_and_or(is_and: bool, *args: Optional[ExprNode]) -> Optional[ExprNode]:
     valid_args = [a for a in args if a is not None]
     if not valid_args:
         return None
     if len(valid_args) == 1:
         return valid_args[0]
-    return ExprNode("and", valid_args)
+    if is_and:  return ExprNode("and", valid_args)
+    else:       return ExprNode("or", valid_args)
+
+def make_and(*args: Optional[ExprNode]) -> Optional[ExprNode]:
+    return make_and_or(True, *args)
+
+def make_or(*args: Optional[ExprNode]) -> Optional[ExprNode]:
+    return make_and_or(False, *args)
 
 
 # Type alias for brevity
